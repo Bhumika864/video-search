@@ -8,7 +8,9 @@ const mongoose = require('mongoose');
 const multer = require('multer');
 const Video = require('./models/Video');
 const User = require('./models/User');
+const TranscriptSegment = require('./models/TranscriptSegment');
 const { transcribe } = require('./services/transcription');
+const { embedTexts } = require('./services/embeddings');
 const {
   createMediaToken,
   createToken,
@@ -22,6 +24,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const uploadsDir = path.join(__dirname, 'uploads');
 const maxUploadBytes = Number(process.env.MAX_UPLOAD_BYTES) || 2 * 1024 * 1024 * 1024;
+const vectorSearchIndex = process.env.VECTOR_SEARCH_INDEX || 'transcript_vector_index';
 
 fs.mkdirSync(uploadsDir, { recursive: true });
 app.use(express.json({ limit: '16kb' }));
@@ -55,6 +58,8 @@ function videoResponse(video) {
     originalName: video.originalName,
     status: video.status,
     error: video.error,
+    embeddingStatus: video.embeddingStatus,
+    embeddingError: video.embeddingError,
     fileUrl: `/api/videos/${video.id}/file`,
     notes: video.notes.map((note) => ({
       id: note.id,
@@ -62,6 +67,31 @@ function videoResponse(video) {
       timestamp: note.timestamp,
     })),
   };
+}
+
+function rankSemanticResults(query, results) {
+  const ignoredWords = new Set([
+    'about', 'after', 'again', 'and', 'are', 'for', 'from', 'have', 'her', 'his',
+    'how', 'into', 'is', 'its', 'that', 'the', 'their', 'them', 'there', 'these',
+    'they', 'this', 'those', 'what', 'when', 'where', 'which', 'who', 'why', 'with',
+    'would', 'you', 'your',
+  ]);
+  const queryWords = [...new Set(
+    query.toLowerCase().match(/[\p{L}\p{N}]+/gu) || [],
+  )].filter((word) => word.length > 2 && !ignoredWords.has(word));
+
+  return results
+    .map((result) => {
+      const segmentWords = new Set(result.text.toLowerCase().match(/[\p{L}\p{N}]+/gu) || []);
+      const overlap = queryWords.filter((word) => segmentWords.has(word)).length;
+      return { result, rank: result.score + overlap * 0.03 };
+    })
+    .sort((a, b) => b.rank - a.rank || b.result.score - a.result.score)
+    .slice(0, 10)
+    .map(({ result }) => {
+      const { score, ...segment } = result;
+      return segment;
+    });
 }
 
 function requireAuth(req, res, next) {
@@ -115,6 +145,17 @@ app.post('/api/auth/login', async (req, res, next) => {
     const user = await User.findOne({ email });
     if (!user || password.length > 128) {
       res.status(401).json({ error: 'Email or password is incorrect.' });
+      return;
+    }
+    if (
+      typeof user.passwordSalt !== 'string' ||
+      !user.passwordSalt ||
+      typeof user.passwordHash !== 'string' ||
+      !/^[a-f\d]{128}$/i.test(user.passwordHash)
+    ) {
+      res.status(409).json({
+        error: 'This account is missing valid password credentials. Remove the incomplete database user and register again.',
+      });
       return;
     }
     const credentials = await hashPassword(password, user.passwordSalt);
@@ -187,6 +228,42 @@ async function processVideo(videoId) {
       video.error = error.message;
       await video.save();
     }
+    return;
+  }
+  indexVideo(video.id, video.ownerId).catch((error) => {
+    console.error(`Could not start semantic indexing for video ${video.id}:`, error);
+  });
+}
+
+async function indexVideo(videoId, ownerId) {
+  const video = await Video.findOneAndUpdate(
+    { _id: videoId, ownerId, status: 'completed', embeddingStatus: { $ne: 'processing' } },
+    { $set: { embeddingStatus: 'processing', embeddingError: '' } },
+    { new: true },
+  );
+  if (!video) return;
+
+  try {
+    const embeddings = await embedTexts(video.transcript.map((segment) => segment.text));
+    if (embeddings.length !== video.transcript.length || embeddings.some((vector) => vector.length !== 384)) {
+      throw new Error('The local embedding model returned an unexpected vector size.');
+    }
+    await TranscriptSegment.deleteMany({ videoId: video._id, ownerId: video.ownerId });
+    await TranscriptSegment.insertMany(video.transcript.map((segment, index) => ({
+      videoId: video._id,
+      ownerId: video.ownerId,
+      text: segment.text,
+      start: segment.start,
+      end: segment.end,
+      embedding: embeddings[index],
+    })));
+    video.embeddingStatus = 'completed';
+    await video.save();
+  } catch (error) {
+    console.error(`Could not index transcript for video ${videoId}:`, error);
+    video.embeddingStatus = 'failed';
+    video.embeddingError = error.message;
+    await video.save();
   }
 }
 
@@ -284,6 +361,43 @@ app.get('/api/videos/:id/search', async (req, res, next) => {
       res.status(409).json({ error: 'This video is not ready to search.' });
       return;
     }
+    if (req.query.mode === 'semantic') {
+      if (video.embeddingStatus !== 'completed') {
+        res.status(409).json({
+          error: video.embeddingStatus === 'failed'
+            ? `Semantic indexing failed: ${video.embeddingError}`
+            : 'Semantic search is still being prepared for this video.',
+        });
+        return;
+      }
+      const [queryEmbedding] = await embedTexts([query]);
+      const results = await TranscriptSegment.aggregate([
+        {
+          $vectorSearch: {
+            index: vectorSearchIndex,
+            path: 'embedding',
+            queryVector: queryEmbedding,
+            numCandidates: 400,
+            limit: 20,
+            filter: {
+              ownerId: new mongoose.Types.ObjectId(req.userId),
+              videoId: video._id,
+            },
+          },
+        },
+        {
+          $project: {
+            _id: 0,
+            text: 1,
+            start: 1,
+            end: 1,
+            score: { $meta: 'vectorSearchScore' },
+          },
+        },
+      ]);
+      res.json({ results: rankSemanticResults(query, results) });
+      return;
+    }
     const escapedQuery = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const wholeWord = req.query.wholeWord === 'true';
     const pattern = wholeWord
@@ -293,6 +407,34 @@ app.get('/api/videos/:id/search', async (req, res, next) => {
       new RegExp(pattern, 'iu').test(segment.text),
     );
     res.json({ results: matches });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/videos/:id/semantic-index', async (req, res, next) => {
+  if (!validId(req.params.id)) {
+    res.status(400).json({ error: 'Invalid video ID.' });
+    return;
+  }
+  try {
+    const video = await Video.findOne({ _id: req.params.id, ownerId: req.userId });
+    if (!video) {
+      res.status(404).json({ error: 'Video not found.' });
+      return;
+    }
+    if (video.status !== 'completed') {
+      res.status(409).json({ error: 'Transcription must finish before semantic indexing.' });
+      return;
+    }
+    if (video.embeddingStatus === 'processing') {
+      res.status(409).json({ error: 'Semantic indexing is already in progress.' });
+      return;
+    }
+    res.status(202).json({ embeddingStatus: 'processing' });
+    indexVideo(video.id, video.ownerId).catch((error) => {
+      console.error(`Could not start semantic indexing for video ${video.id}:`, error);
+    });
   } catch (error) {
     next(error);
   }
@@ -370,6 +512,12 @@ app.use((error, req, res, next) => {
     error.message === 'Choose a video file to upload.'
   ) {
     res.status(400).json({ error: error.message });
+    return;
+  }
+  if (error.code === 31082 || error.codeName === 'SearchNotEnabled') {
+    res.status(503).json({
+      error: 'Semantic search requires MongoDB Atlas or an AtlasCLI local deployment. Your current MongoDB server does not support Vector Search. Connect to Atlas, create the transcript vector index, and try again. Keyword search is still available.',
+    });
     return;
   }
   console.error('Request failed:', error);

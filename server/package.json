@@ -1,5 +1,5 @@
 {
-  "name": "jumptothis-server",
+  "name": "video-search-server",
   "version": "1.0.0",
   "private": true,
   "main": "server.js",
@@ -8,9 +8,10 @@
     "dev": "node --watch server.js"
   },
   "engines": {
-    "node": ">=18.17"
+    "node": ">=20"
   },
   "dependencies": {
+    "@huggingface/transformers": "^4.3.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "mongoose": "^8.9.5",

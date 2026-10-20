@@ -39,6 +39,7 @@ export default function App() {
   const [library, setLibrary] = useState([]);
   const [video, setVideo] = useState(null);
   const [query, setQuery] = useState('');
+  const [searchMode, setSearchMode] = useState('keyword');
   const [wholeWord, setWholeWord] = useState(false);
   const [results, setResults] = useState([]);
   const [activeResult, setActiveResult] = useState(-1);
@@ -88,24 +89,29 @@ export default function App() {
   }, [token, user]);
 
   useEffect(() => {
-    if (!token || !video || !['queued', 'processing'].includes(video.status)) return undefined;
+    if (
+      !token ||
+      !video ||
+      (!['queued', 'processing'].includes(video.status) && video.embeddingStatus !== 'processing')
+    ) return undefined;
     let cancelled = false;
     let timer;
     const checkStatus = async () => {
       try {
         let updatedVideo = await api(`/api/videos/${video.id}`, { token });
         if (!cancelled) {
-          if (['completed', 'failed'].includes(updatedVideo.status)) {
-            if (updatedVideo.status === 'completed') {
-              const playback = await api(`/api/videos/${video.id}/playback`, { token });
-              updatedVideo = { ...updatedVideo, fileUrl: playback.fileUrl };
-            }
-            if (cancelled) return;
-            setVideo(updatedVideo);
+          if (updatedVideo.status === 'completed' && !video.fileUrl?.includes('?access=')) {
+            const playback = await api(`/api/videos/${video.id}/playback`, { token });
+            updatedVideo = { ...updatedVideo, fileUrl: playback.fileUrl };
+          }
+          if (cancelled) return;
+          setVideo(updatedVideo);
+          if (
+            ['completed', 'failed'].includes(updatedVideo.status) &&
+            updatedVideo.embeddingStatus !== 'processing'
+          ) {
             const { videos } = await api('/api/videos', { token });
             setLibrary(videos);
-          } else {
-            setVideo(updatedVideo);
           }
         }
       } catch (requestError) {
@@ -118,7 +124,7 @@ export default function App() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [token, video?.id, video?.status]);
+  }, [token, video?.id, video?.status, video?.embeddingStatus, video?.fileUrl]);
 
   async function submitAuth(event) {
     event.preventDefault();
@@ -203,7 +209,11 @@ export default function App() {
     setActiveResult(-1);
     setSearching(true);
     try {
-      const params = new URLSearchParams({ q: query.trim(), wholeWord: String(wholeWord) });
+      const params = new URLSearchParams({
+        q: query.trim(),
+        mode: searchMode,
+        wholeWord: String(searchMode === 'keyword' && wholeWord),
+      });
       const data = await api(`/api/videos/${video.id}/search?${params}`, { token });
       setResults(data.results);
       if (!data.results.length) setError('No matching moments found.');
@@ -211,6 +221,17 @@ export default function App() {
       setError(requestError.message);
     } finally {
       setSearching(false);
+    }
+  }
+
+  async function indexForSemanticSearch() {
+    if (!video) return;
+    setError('');
+    try {
+      await api(`/api/videos/${video.id}/semantic-index`, { token, method: 'POST' });
+      setVideo((current) => ({ ...current, embeddingStatus: 'processing', embeddingError: '' }));
+    } catch (requestError) {
+      setError(requestError.message);
     }
   }
 
@@ -277,7 +298,7 @@ export default function App() {
     return (
       <main className="page">
         <header className="site-header">
-          <a className="brand" href="/">JumpToThis<span>.</span></a>
+          <a className="brand" href="/">video-search<span>.</span></a>
           <p>Your videos, private to your account.</p>
         </header>
         <section className="panel auth-panel">
@@ -302,7 +323,7 @@ export default function App() {
   return (
     <main className="page">
       <header className="site-header">
-        <a className="brand" href="/">JumpToThis<span>.</span></a>
+        <a className="brand" href="/">video-search<span>.</span></a>
         <div className="account-bar"><span>{user.email}</span><button className="link-button" onClick={signOut}>Sign out</button></div>
       </header>
 
@@ -331,6 +352,8 @@ export default function App() {
         {isProcessing && <p className="status" role="status">{video.status === 'queued' ? 'Video accepted. Preparing transcription…' : 'Transcribing video. This can take a while…'}</p>}
         {video?.status === 'failed' && <p className="error" role="alert">Transcription failed: {video.error}</p>}
         {video?.status === 'completed' && <p className="success" role="status">Transcription complete. Search or add notes below.</p>}
+        {video?.embeddingStatus === 'processing' && <p className="status" role="status">Preparing semantic search with the local embedding model…</p>}
+        {video?.embeddingStatus === 'failed' && <p className="error" role="alert">Semantic indexing failed: {video.embeddingError}</p>}
       </section>
 
       <section className="library-layout">
@@ -366,10 +389,27 @@ export default function App() {
                   <input id="search-query" type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Try a word or phrase" />
                   <button className="primary-button" disabled={!query.trim() || searching}>{searching ? 'Searching…' : 'Search'}</button>
                 </div>
-                <label className="permission whole-word">
-                  <input type="checkbox" checked={wholeWord} onChange={(event) => setWholeWord(event.target.checked)} />
-                  Match whole words only
-                </label>
+                <div className="search-options">
+                  <label className="search-mode">
+                    Search type
+                    <select value={searchMode} onChange={(event) => setSearchMode(event.target.value)}>
+                      <option value="keyword">Keyword</option>
+                      <option value="semantic">Semantic meaning</option>
+                    </select>
+                  </label>
+                  {searchMode === 'keyword' ? (
+                    <label className="permission whole-word">
+                      <input type="checkbox" checked={wholeWord} onChange={(event) => setWholeWord(event.target.checked)} />
+                      Match whole words only
+                    </label>
+                  ) : video.embeddingStatus === 'pending' || video.embeddingStatus === 'failed' ? (
+                    <button type="button" className="secondary-button" onClick={indexForSemanticSearch}>
+                      {video.embeddingStatus === 'failed' ? 'Retry semantic indexing' : 'Prepare semantic search'}
+                    </button>
+                  ) : video.embeddingStatus === 'processing' ? (
+                    <span className="status">Preparing semantic search…</span>
+                  ) : null}
+                </div>
               </form>
               <section className="notes-section">
                 <h3>Notes</h3>

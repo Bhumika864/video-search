@@ -13,6 +13,12 @@ const videoSchema = new mongoose.Schema(
       enum: ['queued', 'processing', 'completed', 'failed'],
       default: 'queued',
     },
+    embeddingStatus: {
+      type: String,
+      enum: ['pending', 'processing', 'completed', 'failed'],
+      default: 'pending',
+    },
+    embeddingError: { type: String, default: '' },
     error: { type: String, default: '' },
     transcript: [
       {
