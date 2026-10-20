@@ -12,6 +12,7 @@ function getApiKey() {
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
     ...options,
+    signal: AbortSignal.timeout(30_000),
     headers: {
       authorization: getApiKey(),
       'content-type': 'application/json',
@@ -36,6 +37,7 @@ async function uploadAudio(filePath) {
     },
     body: fs.createReadStream(filePath),
     duplex: 'half',
+    signal: AbortSignal.timeout(30 * 60 * 1000),
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok || !body.upload_url) {
@@ -51,7 +53,9 @@ async function waitForTranscript(transcriptId) {
     const transcript = await requestJson(`${API_URL}/transcript/${transcriptId}`);
     if (transcript.status === 'completed') return transcript;
     if (transcript.status === 'error') {
-      throw new Error(transcript.error || 'The speech-to-text provider could not transcribe this video.');
+      const error = new Error(transcript.error || 'The speech-to-text provider could not transcribe this video.');
+      error.retryable = false;
+      throw error;
     }
     await delay(5000);
   }
@@ -59,17 +63,25 @@ async function waitForTranscript(transcriptId) {
   throw new Error('Transcription did not finish within four hours.');
 }
 
-async function transcribe(filePath) {
-  const audioUrl = await uploadAudio(filePath);
-  const job = await requestJson(`${API_URL}/transcript`, {
-    method: 'POST',
-    body: JSON.stringify({
-      audio_url: audioUrl,
-      speech_models: ['universal-3-5-pro', 'universal-2'],
-    }),
-  });
-  const transcript = await waitForTranscript(job.id);
-  const sentenceData = await requestJson(`${API_URL}/transcript/${job.id}/sentences`);
+async function transcribe(filePath, { providerJobId = '', onJobCreated = async () => {} } = {}) {
+  let transcriptId = providerJobId;
+  if (!transcriptId) {
+    const audioUrl = await uploadAudio(filePath);
+    const job = await requestJson(`${API_URL}/transcript`, {
+      method: 'POST',
+      body: JSON.stringify({
+        audio_url: audioUrl,
+        speech_models: ['universal-3-5-pro', 'universal-2'],
+      }),
+    });
+    if (typeof job.id !== 'string' || !job.id) {
+      throw new Error('The speech-to-text provider did not return a transcription job ID.');
+    }
+    transcriptId = job.id;
+    await onJobCreated(transcriptId);
+  }
+  const transcript = await waitForTranscript(transcriptId);
+  const sentenceData = await requestJson(`${API_URL}/transcript/${transcriptId}/sentences`);
   const sentences = sentenceData.sentences || [];
   const segments = sentences.length ? sentences : transcript.utterances || [];
 

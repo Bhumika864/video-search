@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node --test",
+    "evaluate-search": "node scripts/evaluate-search.js"
   },
   "engines": {
     "node": ">=20"
@@ -14,6 +16,8 @@
     "@huggingface/transformers": "^4.3.1",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "express-rate-limit": "^8.7.1",
+    "helmet": "^8.3.0",
     "mongoose": "^8.9.5",
     "multer": "^2.4.0"
   }

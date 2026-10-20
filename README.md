@@ -71,4 +71,34 @@ Open the local address printed by Vite, usually `http://localhost:5173`.
 
 Create an account or sign in. Choose a video file, confirm you have permission to process it, and select **Upload and transcribe**. Wait for transcription to complete. Choose **Keyword** for literal matching or **Semantic meaning** to search by meaning. Semantic indexing runs in the background after transcription; the first model download may take a while. Use the previous/next controls or select a result to seek the player. Add notes at the current playback time or from a matching result. Your uploads and notes appear in your account's library after refreshing or signing in again.
 
-Transcription runs asynchronously. The app reports upload progress, transcription status, completion, and errors. Upload size is limited by `MAX_UPLOAD_BYTES` in the server environment. This simple authentication setup is intended as a basic app feature; deploy behind HTTPS and review production authentication, rate limiting, and account-recovery needs before exposing it publicly.
+## Background jobs
+
+Transcription and semantic indexing are stored as MongoDB jobs in the `backgroundjobs` collection. A worker claims jobs with an expiring lease, retries transient failures for up to three attempts with backoff, and resumes a saved AssemblyAI job after a server restart. The API can restart without losing queued jobs. The uploaded video files still live in `server/uploads`, so keep that directory persistent across restarts; for multiple app instances, use shared durable file storage and a shared rate-limit store.
+
+## Evaluate search quality
+
+Search quality is measured against manually labeled transcript moments; the app does not infer whether a result is relevant. Copy the benchmark template, then list existing video IDs:
+
+```powershell
+Set-Location 'D:\Projects\New folder\server'
+Copy-Item search-benchmark.example.json search-benchmark.json
+npm run evaluate-search -- --list-videos
+```
+
+Edit `search-benchmark.json`: for each query, use the listed `videoId` and put the relevant transcript start times (seconds) in `relevantStarts`. Add representative questions and all known relevant moments. The local benchmark file is ignored by Git. Run evaluation:
+
+```powershell
+npm run evaluate-search -- search-benchmark.json
+```
+
+The script reports macro-averaged **Recall@5**, **Recall@10**, **MRR@10**, and **nDCG@10** for keyword and semantic search. To run only keyword evaluation (for a local MongoDB without Vector Search), use:
+
+```powershell
+npm run evaluate-search -- search-benchmark.json --mode keyword
+```
+
+Run the focused unit tests with `npm test`. A benchmark with no representative labeled examples is not a meaningful quality measurement; keep the same labeled queries when comparing search changes.
+
+## Security notes
+
+The API uses Helmet security headers, bounded JSON/upload input, per-IP request limits, generic login failures, and owner-scoped data access. Rate limits use in-memory storage by default and reset when the server restarts; use a shared store if you deploy multiple instances. Keep HTTPS enabled in production, keep `.env` private, and ensure `server/uploads` is not served as a public static directory. These safeguards are a baseline for this small app, not a substitute for a production security assessment.

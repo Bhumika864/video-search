@@ -1,0 +1,11 @@
+{
+  "toleranceSeconds": 3,
+  "queries": [
+    {
+      "videoId": "REPLACE_WITH_VIDEO_ID",
+      "query": "a representative question or phrase",
+      "relevantStarts": [23, 863],
+      "wholeWord": false
+    }
+  ]
+}
