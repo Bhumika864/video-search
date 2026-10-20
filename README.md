@@ -102,3 +102,11 @@ Run the focused unit tests with `npm test`. A benchmark with no representative l
 ## Security notes
 
 The API uses Helmet security headers, bounded JSON/upload input, per-IP request limits, generic login failures, and owner-scoped data access. Rate limits use in-memory storage by default and reset when the server restarts; use a shared store if you deploy multiple instances. Keep HTTPS enabled in production, keep `.env` private, and ensure `server/uploads` is not served as a public static directory. These safeguards are a baseline for this small app, not a substitute for a production security assessment.
+
+## Backend layout
+
+- `server.js` connects to MongoDB, recovers jobs, starts the worker, and handles shutdown.
+- `app.js` configures Express middleware and mounts routes.
+- `config/`, `middleware/`, and `utils/` hold runtime settings, shared request handling, and small helpers.
+- `routes/` and `controllers/` define the API and its request handlers.
+- `models/`, `services/`, and `workers/` hold MongoDB schemas, reusable business logic, and durable background processing.
