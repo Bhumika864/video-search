@@ -75,6 +75,24 @@ Create an account or sign in. Choose a video file, confirm you have permission t
 
 Transcription and semantic indexing are stored as MongoDB jobs in the `backgroundjobs` collection. A worker claims jobs with an expiring lease, retries transient failures for up to three attempts with backoff, and resumes a saved AssemblyAI job after a server restart. The API can restart without losing queued jobs. The uploaded video files still live in `server/uploads`, so keep that directory persistent across restarts; for multiple app instances, use shared durable file storage and a shared rate-limit store.
 
+## Deploy to Render and Vercel
+
+Deploy the Express API as a Render **Web Service** and the Vite client as a Vercel project. Both can use this repository:
+
+- Render **Root Directory**: `server`; **Build Command**: `npm ci`; **Start Command**: `npm start`.
+- Vercel **Root Directory**: `client`; **Build Command**: `npm run build`; **Output Directory**: `dist`; use the Vite framework preset.
+
+Set these Render environment variables:
+
+- `MONGODB_URI`, `ASSEMBLYAI_API_KEY`, and `AUTH_TOKEN_SECRET` (generate a random secret of at least 32 characters).
+- `FRONTEND_ORIGINS` to the exact Vercel site origin, such as `https://video-search.vercel.app`. Separate multiple allowed origins with commas; do not include a trailing slash.
+- `UPLOADS_DIR` to a directory on a Render persistent disk. For example, mount the disk at `/var/data` and set `UPLOADS_DIR=/var/data/uploads`. The app creates this directory if needed.
+- `VECTOR_SEARCH_INDEX` if using a non-default Atlas Vector Search index name.
+
+Render provides `PORT` automatically. In Vercel, set `VITE_API_URL` to the Render service URL, with no trailing slash (for example, `https://video-search-api.onrender.com`). This value is public and must not contain secrets. Redeploy the Vercel project after changing its environment variables.
+
+The Render disk is required to keep uploaded video files across deploys and restarts. Keep the Atlas cluster reachable from Render, and configure its Vector Search index to enable semantic search. The `FRONTEND_ORIGINS` allowlist controls which browser origins may call the API; set it to the production Vercel origin before testing the deployed frontend.
+
 ## Evaluate search quality
 
 Search quality is measured against manually labeled transcript moments; the app does not infer whether a result is relevant. Copy the benchmark template, then list existing video IDs:

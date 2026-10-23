@@ -10,7 +10,7 @@ if (!Number.isSafeInteger(configuredUploadBytes) || configuredUploadBytes <= 0) 
 
 module.exports = {
   port: process.env.PORT || 5000,
-  uploadsDir: path.join(__dirname, '..', 'uploads'),
+  uploadsDir: path.resolve(process.env.UPLOADS_DIR || path.join(__dirname, '..', 'uploads')),
   maxUploadBytes: configuredUploadBytes,
   vectorSearchIndex: process.env.VECTOR_SEARCH_INDEX || 'transcript_vector_index',
   jobLeaseMs: 2 * 60 * 1000,
